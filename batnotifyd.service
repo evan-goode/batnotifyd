@@ -1,0 +1,9 @@
+[Unit]
+Description=batnotifyd
+
+[Service]
+ExecStart=/usr/local/bin/batnotifyd
+Restart=always
+
+[Install]
+WantedBy=default.target

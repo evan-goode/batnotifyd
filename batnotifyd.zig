@@ -4,7 +4,6 @@ const c = @cImport({
     @cInclude("libudev.h");
 });
 
-const POLL_INTERVAL = 2;
 const POWER_SUPPLY_SUBSYSTEM_DEVTYPE = "power_supply";
 const POWER_SUPPLY_SUBSYSTEM_PATH = "/sys/class/" ++ POWER_SUPPLY_SUBSYSTEM_DEVTYPE;
 
@@ -13,20 +12,25 @@ const PROP_CHARGE_FULL = "POWER_SUPPLY_CHARGE_FULL";
 const PROP_CAPACITY = "POWER_SUPPLY_CAPACITY";
 const PROP_ONLINE = "POWER_SUPPLY_ONLINE";
 
-const APPLICATION_NAME = "battnotifyd";
+const APPLICATION_NAME = "batnotifyd";
+
+// BEGIN CONFIGURABLE OPTIONS
+const POLL_INTERVAL = 60; // seconds
 
 const LOW_THRESHOLD = 0.15;
-const LOW_MESSAGE = "Low battery!";
+const LOW_MESSAGE_FORMAT = "Battery is at {d:.0}%";
 
 const CRITICAL_THRESHOLD = 0.05;
-const CRITICAL_MESSAGE = "Critically low battery!";
+const CRITICAL_MESSAGE_FORMAT = "Battery is at {d:.0}%";
 
 const POWER_SUPPLY_PATH = POWER_SUPPLY_SUBSYSTEM_PATH ++ "/ADP1";
 const BATTERY_PATH = POWER_SUPPLY_SUBSYSTEM_PATH ++ "/BAT0";
 
+// END CONFIGURABLE OPTIONS
+
 const BatteryConfig = struct {
-    power_supply_path: [*c]const u8,
-    battery_path: [*c]const u8,
+    power_supply_path: []const u8,
+    battery_path: []const u8,
 };
 
 const Battery = struct {
@@ -36,15 +40,17 @@ const Battery = struct {
     critical_shown: bool = false,
 };
 
-fn notify(battery: *Battery, summary: [*c]const u8, body: [*c]const u8, icon: [*c]const u8) void {
+fn notify(battery: *Battery, summary: []const u8, body: []const u8, icon: []const u8, force_show: bool) void {
     if (battery.notification == null) {
-        battery.notification = c.notify_notification_new(summary, body, icon);
-        // _ = g_signal_connect(battery.notification, "closed", @ptrCast(c.GCallback, on_closed), null);
+        battery.notification = c.notify_notification_new(summary.ptr, body.ptr, icon.ptr);
         _ = c.notify_notification_set_timeout(battery.notification, c.NOTIFY_EXPIRES_NEVER);
         _ = c.notify_notification_show(battery.notification, null);
     } else {
-        _ = c.notify_notification_update(battery.notification, summary, body, icon);
-        _ = c.notify_notification_show(battery.notification, null);
+        _ = c.notify_notification_update(battery.notification, summary.ptr, body.ptr, icon.ptr);
+        const reason = c.notify_notification_get_closed_reason(battery.notification);
+        if (reason == -1 or force_show) {
+            _ = c.notify_notification_show(battery.notification, null);
+        }
     }
 }
 
@@ -63,19 +69,19 @@ fn get_charge(dev: *c.udev_device) !f32 {
     return @intToFloat(f32, capacity) / 100;
 }
 
-fn update(udev: ?*c.udev, batteries: std.ArrayList(Battery)) !void {
+fn update(allocator: *std.mem.Allocator, udev: ?*c.udev, batteries: std.ArrayList(Battery)) !void {
     var i: usize = 0;
     while (i < batteries.items.len) : (i += 1) {
         const battery = batteries.items[i];
 
-        const battery_dev = c.udev_device_new_from_syspath(udev, battery.config.battery_path);
+        const battery_dev = c.udev_device_new_from_syspath(udev, battery.config.battery_path.ptr);
         defer _ = c.udev_device_unref(battery_dev);
 
         if (battery_dev == null) continue;
 
         const charge = try get_charge(battery_dev.?);
 
-        const power_supply_dev = c.udev_device_new_from_syspath(udev, battery.config.power_supply_path);
+        const power_supply_dev = c.udev_device_new_from_syspath(udev, battery.config.power_supply_path.ptr);
         defer _ = c.udev_device_unref(power_supply_dev);
         const online_str = c.udev_device_get_property_value(power_supply_dev, PROP_ONLINE);
         const is_charging = std.mem.eql(u8, std.mem.spanZ(online_str), "1");
@@ -83,24 +89,30 @@ fn update(udev: ?*c.udev, batteries: std.ArrayList(Battery)) !void {
         if (is_charging) {
             batteries.items[i].critical_shown = false;
             batteries.items[i].low_shown = false;
-            _ = c.notify_notification_close(battery.notification, null);
+            if (battery.notification != null) {
+                _ = c.notify_notification_close(battery.notification, null);
+            }
         } else {
             if (charge <= CRITICAL_THRESHOLD) {
-                if (!battery.critical_shown) {
-                    notify(&batteries.items[i], CRITICAL_MESSAGE, "", "battery-low");
-                    batteries.items[i].critical_shown = true;
-                }
-            } else if (charge <= LOW_THRESHOLD and !battery.low_shown) {
-                if (!battery.low_shown) {
-                    notify(&batteries.items[i], LOW_MESSAGE, "", "battery-low");
-                    batteries.items[i].low_shown = true;
-                }
+                const force_show = !battery.critical_shown;
+                const charge_percent = 100 * charge;
+                const critical_message = try std.fmt.allocPrintZ(allocator, CRITICAL_MESSAGE_FORMAT, .{charge_percent});
+                defer allocator.free(critical_message);
+                notify(&batteries.items[i], critical_message, "", "battery-low", force_show);
+                batteries.items[i].critical_shown = true;
+            } else if (charge <= LOW_THRESHOLD) {
+                const force_show = !battery.low_shown;
+                const charge_percent = 100 * charge;
+                const low_message = try std.fmt.allocPrintZ(allocator, LOW_MESSAGE_FORMAT, .{charge_percent});
+                defer allocator.free(low_message);
+                notify(&batteries.items[i], low_message, "", "battery-low", force_show);
+                batteries.items[i].low_shown = true;
             }
         }
     }
 }
 
-fn monitor_battery(udev: ?*c.udev, batteries: std.ArrayList(Battery)) !void {
+fn monitor_battery(allocator: *std.mem.Allocator, udev: ?*c.udev, batteries: std.ArrayList(Battery)) !void {
     const mon = c.udev_monitor_new_from_netlink(udev, "udev");
     defer _ = c.udev_monitor_unref(mon);
     _ = c.udev_monitor_filter_add_match_subsystem_devtype(mon, POWER_SUPPLY_SUBSYSTEM_DEVTYPE, null);
@@ -131,7 +143,7 @@ fn monitor_battery(udev: ?*c.udev, batteries: std.ArrayList(Battery)) !void {
     var timer_buffer = [_]u8{0} ** 8;
 
     while (true) {
-        try update(udev, batteries);
+        try update(allocator, udev, batteries);
 
         const result = std.os.poll(&pollfds, -1);
 
@@ -142,6 +154,10 @@ fn monitor_battery(udev: ?*c.udev, batteries: std.ArrayList(Battery)) !void {
             _ = std.os.linux.timerfd_settime(timer_fd, 0, &itimerspec, null);
         }
     }
+}
+
+fn run_g_main_loop(g_main_loop: ?*c.GMainLoop) void {
+    _ = c.g_main_loop_run(g_main_loop);
 }
 
 pub fn main() !void {
@@ -161,6 +177,7 @@ pub fn main() !void {
         return error.UdevFailed;
     }
 
+    // in the future, support multiple batteries
     var batteries = std.ArrayList(Battery).init(&gpa.allocator);
     defer batteries.deinit();
 
@@ -168,8 +185,11 @@ pub fn main() !void {
         .power_supply_path = POWER_SUPPLY_PATH,
         .battery_path = BATTERY_PATH,
     };
+
+    const g_main_loop = c.g_main_loop_new(null, 0);
+    _ = try std.Thread.spawn(run_g_main_loop, g_main_loop);
     try batteries.append(Battery{
         .config = &config,
     });
-    try monitor_battery(udev, batteries);
+    try monitor_battery(&gpa.allocator, udev, batteries);
 }
