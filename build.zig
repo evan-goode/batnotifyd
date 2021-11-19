@@ -14,7 +14,7 @@ pub fn build(b: *Builder) void {
     const exe = b.addExecutable("batnotifyd", "batnotifyd.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
-    exe.linkSystemLibrary("c");
+    exe.linkLibC();
     exe.linkSystemLibrary("libnotify");
     exe.linkSystemLibrary("libudev");
     exe.install();
