@@ -1,8 +1,0 @@
-pkgs:
-  batnotifyd:
-    version: 0.0.0
-    root: src/main.zig
-    license: GPL-3.0
-    source_url: "https://github.com/evan-goode/batnotifyd"
-deps:
-  Hejsil/clap: ^0.4.1

@@ -1,5 +1,4 @@
 const Builder = @import("std").build.Builder;
-const pkgs = @import("gyro").pkgs;
 
 pub fn build(b: *Builder) void {
     // Standard target options allows the person running `zig build` to choose
@@ -13,9 +12,9 @@ pub fn build(b: *Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("batnotifyd", "batnotifyd.zig");
+    exe.addPackagePath("clap", "lib/zig-clap/clap.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
-    pkgs.addAllTo(exe);
     exe.linkLibC();
     exe.linkSystemLibrary("libnotify");
     exe.linkSystemLibrary("libudev");
