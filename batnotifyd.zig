@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("libnotify/notify.h");
     @cInclude("libudev.h");
+    @cInclude("wordexp.h");
 });
 
 const clap = @import("clap");
@@ -25,7 +26,7 @@ const PROP_STATUS = "POWER_SUPPLY_STATUS";
 
 const APPLICATION_NAME = "batnotifyd";
 
-const DEFAULT_POLL_INTERVAL = 60; // seconds
+const DEFAULT_POLL_INTERVAL = 10; // seconds
 const DEFAULT_NOTIFICATION_TIMEOUT = 0; // seconds, 0 for no timeout
 
 const DEFAULT_LOW_THRESHOLD = 0.15;
@@ -34,11 +35,16 @@ const LOW_MESSAGE_FORMAT = "Battery is at {d:.0}%";
 const DEFAULT_CRITICAL_THRESHOLD = 0.05;
 const CRITICAL_MESSAGE_FORMAT = "Battery is at {d:.0}%";
 
+const DEFAULT_DANGER_THRESHOLD = 0.02;
+const DANGER_MESSAGE_FORMAT = "Battery is dangerously low: {d:.0}%";
+
 const Options = struct {
     poll_interval: u32, // seconds
     notification_timeout: u32, // seconds
     low_threshold: f32,
     critical_threshold: f32,
+    danger_threshold: f32,
+    danger_argv: ?[]const []const u8,
 };
 
 const Battery = struct {
@@ -47,6 +53,8 @@ const Battery = struct {
     notification: ?*c.NotifyNotification = null,
     low_shown: bool = false,
     critical_shown: bool = false,
+    danger_shown: bool = false,
+    danger_hook_run: bool = false,
     battery_dev: ?*c.udev_device = null,
 };
 
@@ -56,6 +64,14 @@ fn expand_power_supply_path(allocator: *std.mem.Allocator, user_path: []const u8
         return try allocator.dupeZ(u8, user_path);
     }
     return try std.fmt.allocPrintZ(allocator.*, POWER_SUPPLY_SUBSYSTEM_PATH ++ "{s}", .{user_path});
+}
+
+/// Run a command.
+fn spawn_child(argv: []const []const u8, allocator: *std.mem.Allocator) void {
+    var child = std.ChildProcess.init(argv, allocator.*);
+    _ = child.spawnAndWait() catch {
+        std.log.err("Couldn't run command {s}", .{argv[0]});
+    };
 }
 
 /// Show a new notification or reuse the existing one.
@@ -146,13 +162,27 @@ fn update(allocator: *std.mem.Allocator, options: *Options, udev: ?*c.udev, batt
     const is_charging = try is_battery_charging(udev, battery);
 
     if (is_charging) {
+        battery.danger_hook_run = false;
+        battery.danger_shown = false;
         battery.critical_shown = false;
         battery.low_shown = false;
         if (battery.notification != null) {
             _ = c.notify_notification_close(battery.notification, null);
         }
     } else {
-        if (charge <= options.critical_threshold) {
+        if (charge <= options.danger_threshold) {
+            const force_show = !battery.danger_shown;
+            const charge_percent = std.math.ceil(100 * charge);
+            const danger_message = try std.fmt.allocPrintZ(allocator.*, DANGER_MESSAGE_FORMAT, .{charge_percent});
+            defer allocator.free(danger_message);
+            notify(options, battery, danger_message, "", "battery-low", force_show);
+            battery.danger_shown = true;
+
+            if (options.danger_argv) |argv| {
+                _ = try std.Thread.spawn(std.Thread.SpawnConfig{}, spawn_child, .{ argv, allocator });
+                battery.danger_hook_run = true;
+            }
+        } else if (charge <= options.critical_threshold) {
             const force_show = !battery.critical_shown;
             const charge_percent = std.math.ceil(100 * charge);
             const critical_message = try std.fmt.allocPrintZ(allocator.*, CRITICAL_MESSAGE_FORMAT, .{charge_percent});
@@ -328,12 +358,14 @@ pub fn main() !void {
 
     const params = comptime [_]clap.Param(clap.Help){
         clap.parseParam("-h, --help                     Display this help and exit.") catch unreachable,
-        clap.parseParam("-b, --battery <string>            Name of the battery device to monitor, e.g. BAT0, or its full path, e.g. /sys/class/power_supply/BAT0. If not supplied, a device will be selected automatically.") catch unreachable,
-        clap.parseParam("-p, --power_supply <string>       Name of the power supply device connected to the battery, e.g. AC, or its full path, e.g. /sys/class/power_supply/AC. If not supplied, a device will be selected automatically.") catch unreachable,
+        clap.parseParam("-b, --battery <string>         Name of the battery device to monitor, e.g. BAT0, or its full path, e.g. /sys/class/power_supply/BAT0. If not supplied, a device will be selected automatically.") catch unreachable,
+        clap.parseParam("-p, --power_supply <string>    Name of the power supply device connected to the battery, e.g. AC, or its full path, e.g. /sys/class/power_supply/AC. If not supplied, a device will be selected automatically.") catch unreachable,
         clap.parseParam("-i, --interval <u32>           Interval in seconds at which to poll the battery in case any udev events are missed. Default is 60.") catch unreachable,
         clap.parseParam("-l, --low_threshold <f32>      Percentage capacity at which the battery is \"low\". Default is 15.") catch unreachable,
         clap.parseParam("-c, --critical_threshold <f32> Percentage capacity at which the battery is critically low. Default is 5.") catch unreachable,
+        clap.parseParam("-d, --danger_threshold <f32>   Percentage capacity at which the battery is dangerously low. Default is 2.") catch unreachable,
         clap.parseParam("-t, --timeout <u32>            Notification timeout in seconds. Default is 0 (notifications stay until dismissed)") catch unreachable,
+        clap.parseParam("-x, --danger_hook <string>     Command to run when the battery reaches dangerously low level") catch unreachable,
     };
 
     var diag = clap.Diagnostic{};
@@ -344,12 +376,12 @@ pub fn main() !void {
     defer res.deinit();
 
     if (res.args.help) {
-        clap.help(
+        try clap.help(
             std.io.getStdErr().writer(),
             clap.Help,
             &params,
             .{},
-        ) catch unreachable;
+        );
         return;
     }
 
@@ -365,7 +397,6 @@ pub fn main() !void {
         }
         break :blk DEFAULT_LOW_THRESHOLD;
     };
-
     const critical_threshold = blk: {
         if (res.args.critical_threshold) |arg| {
             if (!(0.0 <= arg and arg <= 100.0)) {
@@ -376,17 +407,40 @@ pub fn main() !void {
         }
         break :blk DEFAULT_CRITICAL_THRESHOLD;
     };
+    const danger_threshold = blk: {
+        if (res.args.danger_threshold) |arg| {
+            if (!(0.0 <= arg and arg <= 100.0)) {
+                std.log.err("Invalid danger threshold {d}. Should be a numeric percentage, like \"20\".", .{arg});
+                return;
+            }
+            break :blk arg / 100.0;
+        }
+        break :blk DEFAULT_DANGER_THRESHOLD;
+    };
+
+    const danger_argv = blk: {
+        if (res.args.danger_hook) |hook| {
+            var argv = std.ArrayList([]const u8).init(allocator.*);
+            defer argv.deinit();
+            var it = try std.process.ArgIteratorGeneral(.{}).init(allocator.*, hook);
+            while (it.next()) |arg| {
+                try argv.append(arg);
+            }
+            break :blk argv.toOwnedSlice();
+        }
+        break :blk null;
+    };
 
     const user_battery_path: ?[:0]const u8 = blk: {
         if (res.args.battery) |arg| {
-            break :blk expand_power_supply_path(allocator, arg) catch unreachable;
+            break :blk try expand_power_supply_path(allocator, arg);
         } else {
             break :blk null;
         }
     };
     const user_power_supply_path: ?[:0]const u8 = blk: {
         if (res.args.power_supply) |arg| {
-            break :blk expand_power_supply_path(allocator, arg) catch unreachable;
+            break :blk try expand_power_supply_path(allocator, arg);
         } else {
             break :blk null;
         }
@@ -405,7 +459,9 @@ pub fn main() !void {
         .poll_interval = poll_interval,
         .low_threshold = low_threshold,
         .critical_threshold = critical_threshold,
+        .danger_threshold = danger_threshold,
         .notification_timeout = notification_timeout,
+        .danger_argv = danger_argv,
     };
 
     if (c.notify_init(APPLICATION_NAME) != 1) {
