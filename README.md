@@ -5,7 +5,8 @@ Lightweight daemon for low battery notifications on GNU/Linux. Requires libudev 
 ## Build & Run
 
 ```
-zig build
+nix develop # if using Nix
+zig build -Drelease-safe
 ./zig-out/bin/batnotifyd
 ```
 
@@ -24,7 +25,7 @@ A systemd `--user` unit file is included for convenience.
 ```
 zig build
 sudo install -m 755 ./zig-out/bin/batnotifyd /usr/local/bin/
-install -m 644 batnotifyd.service ~/.config/systemd/user/
+install -Dm 644 batnotifyd.service -t ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now batnotifyd
 ```
