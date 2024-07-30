@@ -319,7 +319,7 @@ fn get_battery(allocator: *std.mem.Allocator, udev: ?*c.udev, user_battery_path:
         return error.LoggedError;
     }
 
-    const battery_device = c.udev_device_new_from_syspath(udev, battery_path.?);
+    const battery_device = c.udev_device_new_from_syspath(udev, @ptrCast([*c]const u8, battery_path.?));
     defer _ = c.udev_device_unref(battery_device);
     if (battery_device == null) {
         // std.log.err("Couldn't open the battery at {s}", .{battery_path});
@@ -327,7 +327,7 @@ fn get_battery(allocator: *std.mem.Allocator, udev: ?*c.udev, user_battery_path:
     }
 
     if (power_supply_path) |path| {
-        const power_supply_device = c.udev_device_new_from_syspath(udev, path);
+        const power_supply_device = c.udev_device_new_from_syspath(udev, @ptrCast([*c]const u8, path));
         defer _ = c.udev_device_unref(power_supply_device);
         if (power_supply_device == null) {
             if (user_power_supply_path) |user_path| {

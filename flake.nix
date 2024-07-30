@@ -2,21 +2,39 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     utils.url = "github:numtide/flake-utils";
-    zig.url = "github:mitchellh/zig-overlay";
   };
 
-  outputs = { self, nixpkgs, utils, zig }:
+  outputs = { self, nixpkgs, utils }:
     utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages."${system}";
+        pkgs = import nixpkgs { inherit system; };
       in {
+        packages = {
+          batnotifyd = pkgs.stdenv.mkDerivation {
+            pname = "batnotifyd";
+            version = "1.0";
+            src = ./.;
+            nativeBuildInputs = with pkgs; [ pkg-config libnotify udev zig ];
+            buildPhase = ''
+              XDG_CACHE_HOME=xdg_cache zig build
+            '';
+            installPhase = ''
+              mkdir -p $out/bin/
+              cp zig-out/bin/batnotifyd $out/bin/
+            '';
+          };
+        };
+
        devShell = pkgs.mkShell {
-          nativeBuildInputs = [
-            pkgs.pkg-config
-            pkgs.libnotify
-            pkgs.udev
-            zig.packages."${system}"."master-2022-08-03"
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            libnotify
+            udev
+            zig
+            gdb
           ];
         };
+
+        defaultPackage = self.packages.${system}.batnotifyd;
       });
 }
