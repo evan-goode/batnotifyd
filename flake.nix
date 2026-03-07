@@ -23,6 +23,7 @@
               cp zig-out/bin/batnotifyd $out/bin/
             '';
           };
+          default = self.packages.${system}.batnotifyd;
         };
 
        devShell = pkgs.mkShell {
@@ -34,7 +35,5 @@
             gdb
           ];
         };
-
-        defaultPackage = self.packages.${system}.batnotifyd;
       });
 }
