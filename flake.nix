@@ -16,7 +16,7 @@
             src = ./.;
             nativeBuildInputs = with pkgs; [ pkg-config libnotify udev zig ];
             buildPhase = ''
-              XDG_CACHE_HOME=xdg_cache zig build
+              XDG_CACHE_HOME=xdg_cache zig build -Dcpu=baseline
             '';
             installPhase = ''
               mkdir -p $out/bin/
