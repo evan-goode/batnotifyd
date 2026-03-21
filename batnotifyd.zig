@@ -176,7 +176,7 @@ fn update(allocator: *std.mem.Allocator, options: *Options, udev: ?*c.udev, batt
     } else {
         if (charge <= options.danger_threshold) {
             const force_show = !battery.danger_shown;
-            const charge_percent = std.math.ceil(100 * charge);
+            const charge_percent = std.math.round(100 * charge);
             const danger_message = try std.fmt.allocPrintZ(allocator.*, DANGER_MESSAGE_FORMAT, .{charge_percent});
             defer allocator.free(danger_message);
             notify(options, battery, danger_message, "", "battery-low", force_show);
@@ -188,14 +188,14 @@ fn update(allocator: *std.mem.Allocator, options: *Options, udev: ?*c.udev, batt
             }
         } else if (charge <= options.critical_threshold) {
             const force_show = !battery.critical_shown;
-            const charge_percent = std.math.ceil(100 * charge);
+            const charge_percent = std.math.round(100 * charge);
             const critical_message = try std.fmt.allocPrintZ(allocator.*, CRITICAL_MESSAGE_FORMAT, .{charge_percent});
             defer allocator.free(critical_message);
             notify(options, battery, critical_message, "", "battery-low", force_show);
             battery.critical_shown = true;
         } else if (charge <= options.low_threshold) {
             const force_show = !battery.low_shown;
-            const charge_percent = std.math.ceil(100 * charge);
+            const charge_percent = std.math.round(100 * charge);
             const low_message = try std.fmt.allocPrintZ(allocator.*, LOW_MESSAGE_FORMAT, .{charge_percent});
             defer allocator.free(low_message);
             notify(options, battery, low_message, "", "battery-low", force_show);
