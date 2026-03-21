@@ -89,7 +89,11 @@ fn notify(options: *Options, battery: *Battery, summary: []const u8, body: []con
     } else {
         _ = c.notify_notification_update(battery.notification, summary.ptr, body.ptr, icon.ptr);
         const reason = c.notify_notification_get_closed_reason(battery.notification);
-        if (reason == -1 or force_show) {
+        if (reason == -1) {
+            _ = c.notify_notification_show(battery.notification, null);
+        } else if (force_show) {
+            battery.notification = c.notify_notification_new(summary.ptr, body.ptr, icon.ptr);
+            _ = c.notify_notification_set_timeout(battery.notification, timeout_ms);
             _ = c.notify_notification_show(battery.notification, null);
         }
     }
